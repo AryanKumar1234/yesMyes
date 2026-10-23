@@ -54,6 +54,23 @@ jobs:
           echo "Found Gradle project at: $DIR"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
+      - name: Fix root build.gradle repositories conflict
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          cat > build.gradle << 'EOF'
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.1.2'
+              }
+          }
+          EOF
+          echo "build.gradle rewritten:"
+          cat build.gradle
+
       - name: Write local.properties
         working-directory: ${{ steps.locate.outputs.dir }}
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
