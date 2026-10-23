@@ -32,6 +32,16 @@ jobs:
         with:
           gradle-version: '8.0'
 
+      - name: Extract project zip (if present)
+        run: |
+          ZIP=$(find . -maxdepth 2 -iname "*.zip" | head -n 1)
+          if [ -n "$ZIP" ]; then
+            echo "Found zip: $ZIP — extracting…"
+            unzip -o "$ZIP" -d .
+          else
+            echo "No zip found at repo root — assuming files were uploaded individually."
+          fi
+
       - name: Locate Gradle project root
         id: locate
         run: |
