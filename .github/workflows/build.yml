@@ -32,11 +32,25 @@ jobs:
         with:
           gradle-version: '8.0'
 
+      - name: Locate Gradle project root
+        id: locate
+        run: |
+          MATCH=$(find . -maxdepth 4 \( -name settings.gradle -o -name settings.gradle.kts \) | head -n 1)
+          if [ -z "$MATCH" ]; then
+            echo "::error::No settings.gradle found anywhere in this repo (searched 4 levels deep)."
+            exit 1
+          fi
+          DIR=$(dirname "$MATCH")
+          echo "Found Gradle project at: $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
       - name: Write local.properties
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
       - name: Setup keystore
         id: keystore
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: |
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
 
@@ -95,9 +109,11 @@ jobs:
           fi
 
       - name: Build release APK
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: |
           mv app/build/outputs/apk/release/app-release.apk \
              app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
@@ -106,7 +122,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sms-forwarder-v${{ github.run_number }}
-          path: app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
+          path: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
           retention-days: 30
 
       - name: Upload keystore backup
@@ -114,7 +130,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: BACKUP-keystore
-          path: release.jks
+          path: ${{ steps.locate.outputs.dir }}/release.jks
           retention-days: 90
 
       - name: Create GitHub Release
@@ -123,5 +139,5 @@ jobs:
         with:
           tag_name: "v1.${{ github.run_number }}"
           name: "SMS Forwarder v1.${{ github.run_number }}"
-          files: app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
+          files: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
           generate_release_notes: true
