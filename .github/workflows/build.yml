@@ -11,14 +11,14 @@ on:
         default: false
 
 permissions:
-  contents: write   # required for creating GitHub Releases
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -28,36 +28,69 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3   # handles caching automatically
+        uses: gradle/actions/setup-gradle@v3
 
       - name: Write local.properties
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
 
-      - name: Check secrets are set
+      - name: Setup keystore
+        id: keystore
         run: |
-          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "::error::Secret KEYSTORE_BASE64 is not set"; exit 1; fi
-          if [ -z "${{ secrets.KEYSTORE_PASSWORD }}" ]; then
-            echo "::error::Secret KEYSTORE_PASSWORD is not set"; exit 1; fi
-          if [ -z "${{ secrets.KEY_ALIAS }}" ]; then
-            echo "::error::Secret KEY_ALIAS is not set"; exit 1; fi
-          if [ -z "${{ secrets.KEY_PASSWORD }}" ]; then
-            echo "::error::Secret KEY_PASSWORD is not set"; exit 1; fi
-          echo "All secrets present ✓"
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
 
-      - name: Decode keystore
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.jks
-          echo "Keystore size: $(wc -c < release.jks) bytes"
-
-      - name: Create keystore.properties
-        run: |
-          cat > keystore.properties << EOF
+            echo "✓ Using keystore from secrets"
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.jks
+            cat > keystore.properties << PROPS
           storeFile=../release.jks
           storePassword=${{ secrets.KEYSTORE_PASSWORD }}
           keyAlias=${{ secrets.KEY_ALIAS }}
           keyPassword=${{ secrets.KEY_PASSWORD }}
-          EOF
+          PROPS
+
+          else
+
+            echo "No secrets found — generating keystore for this build..."
+            PASS="SmsForwarder$(date +%Y)"
+            ALIAS="smsforwarder"
+
+            keytool -genkeypair \
+              -keystore release.jks \
+              -alias "$ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PASS" -keypass "$PASS" \
+              -dname "CN=SmsForwarder,O=Personal,C=US" \
+              -noprompt
+
+            B64=$(base64 -w 0 release.jks)
+
+            cat > keystore.properties << PROPS
+          storeFile=../release.jks
+          storePassword=$PASS
+          keyAlias=$ALIAS
+          keyPassword=$PASS
+          PROPS
+
+            cat >> $GITHUB_STEP_SUMMARY << SUMMARY
+          ## ⚠️ Action required — save these as GitHub Secrets
+
+          A keystore was auto-generated for this build.
+          **Add the 4 secrets below**, otherwise every build creates a new keystore
+          and you won't be able to install updates without uninstalling the app first.
+
+          Go to: **Settings → Secrets and variables → Actions → New repository secret**
+
+          | Secret name | Value |
+          |---|---|
+          | \`KEYSTORE_BASE64\` | \`$B64\` |
+          | \`KEYSTORE_PASSWORD\` | \`$PASS\` |
+          | \`KEY_ALIAS\` | \`$ALIAS\` |
+          | \`KEY_PASSWORD\` | \`$PASS\` |
+
+          Also download the **BACKUP-keystore** artifact and keep it safe.
+          SUMMARY
+
+            echo "FRESH=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Make gradlew executable
         run: chmod +x gradlew
@@ -70,12 +103,20 @@ jobs:
           mv app/build/outputs/apk/release/app-release.apk \
              app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: sms-forwarder-v${{ github.run_number }}
           path: app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
           retention-days: 30
+
+      - name: Upload keystore backup
+        if: steps.keystore.outputs.FRESH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BACKUP-keystore
+          path: release.jks
+          retention-days: 90
 
       - name: Create GitHub Release
         if: github.event_name == 'workflow_dispatch' && inputs.create_release == 'true'
