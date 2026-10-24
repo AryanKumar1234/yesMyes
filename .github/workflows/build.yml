@@ -36,6 +36,21 @@ jobs:
           echo "Project dir: $DIR"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
+      - name: Fix duplicate META-INF files
+        run: |
+          F="${{ steps.extract.outputs.dir }}/app/build.gradle.kts"
+          if ! grep -q "NOTICE.md" "$F"; then
+            cat >> "$F" <<'EOF'
+          android {
+              packaging {
+                  resources {
+                      excludes += setOf("META-INF/NOTICE.md", "META-INF/LICENSE.md", "META-INF/NOTICE", "META-INF/LICENSE", "META-INF/DEPENDENCIES", "META-INF/INDEX.LIST")
+                  }
+              }
+          }
+          EOF
+          fi
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
