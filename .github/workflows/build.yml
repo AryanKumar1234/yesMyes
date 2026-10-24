@@ -135,6 +135,193 @@ jobs:
           echo "app/build.gradle rewritten:"
           cat app/build.gradle
 
+      - name: Fix ForwardingHelper.java (raw SMS forward, no prefix)
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: |
+          cat > app/src/main/java/com/smsforwarder/ForwardingHelper.java << 'EOF'
+          package com.smsforwarder;
+
+          import android.content.Context;
+          import android.telephony.SmsManager;
+          import android.util.Base64;
+          import android.util.Log;
+
+          import java.io.BufferedReader;
+          import java.io.InputStreamReader;
+          import java.io.PrintWriter;
+          import java.net.HttpURLConnection;
+          import java.net.Socket;
+          import java.net.URL;
+          import java.net.URLEncoder;
+          import javax.net.ssl.SSLSocket;
+          import javax.net.ssl.SSLSocketFactory;
+
+          public class ForwardingHelper {
+
+              private static final String TAG = "SmsForwarder";
+
+              /** Called by SmsReceiver when an SMS arrives */
+              public static void forward(Context ctx, String sender, String body) {
+                  Prefs p = new Prefs(ctx);
+                  String header  = "📱 From: " + sender;
+                  String message = header + "\n\n" + body;
+
+                  // ── 1. SMS to target number ────────────────────────────────────────────
+                  if (p.isSmsEnabled() && !p.getTargetNumber().isEmpty()) {
+                      // Sends the exact original text, unmodified — no "FWD [x]:" label.
+                      // Note: the message will still arrive showing THIS phone's own
+                      // number as the sender, since Android/carriers don't let an app
+                      // choose what number a text appears to come from.
+                      sendViaSms(p.getTargetNumber(), body);
+                  }
+
+                  // ── 2. Telegram bot ────────────────────────────────────────────────────
+                  if (p.isTelegramEnabled()
+                          && !p.getBotToken().isEmpty()
+                          && !p.getChatId().isEmpty()) {
+                      String tok = p.getBotToken(), chat = p.getChatId(), msg = message;
+                      new Thread(() -> sendViaTelegram(tok, chat, msg)).start();
+                  }
+
+                  // ── 3. Email via SMTP ──────────────────────────────────────────────────
+                  if (p.isEmailEnabled() && !p.getEmailTo().isEmpty()) {
+                      new Thread(() -> sendViaEmail(p, sender, body)).start();
+                  }
+              }
+
+              /** Test helper – fires a fake SMS through all enabled channels */
+              public static void testForward(Context ctx) {
+                  forward(ctx, "+1234567890", "Test message from SMS Forwarder. ✓ All systems go!");
+              }
+
+              // ══════════════════════════════════════════════════════════════════════════
+              // SMS
+              // ══════════════════════════════════════════════════════════════════════════
+              private static void sendViaSms(String number, String message) {
+                  try {
+                      SmsManager sm = SmsManager.getDefault();
+                      java.util.ArrayList<String> parts = sm.divideMessage(message);
+                      if (parts.size() == 1) {
+                          sm.sendTextMessage(number, null, message, null, null);
+                      } else {
+                          sm.sendMultipartTextMessage(number, null, parts, null, null);
+                      }
+                      Log.i(TAG, "SMS forwarded → " + number);
+                  } catch (Exception e) {
+                      Log.e(TAG, "SMS forward failed: " + e.getMessage());
+                  }
+              }
+
+              // ══════════════════════════════════════════════════════════════════════════
+              // Telegram
+              // ══════════════════════════════════════════════════════════════════════════
+              private static void sendViaTelegram(String token, String chatId, String text) {
+                  try {
+                      String enc = URLEncoder.encode(text, "UTF-8");
+                      String urlStr = "https://api.telegram.org/bot" + token
+                              + "/sendMessage?chat_id=" + chatId + "&text=" + enc;
+                      HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
+                      conn.setConnectTimeout(15_000);
+                      conn.setReadTimeout(15_000);
+                      conn.setRequestMethod("GET");
+                      int code = conn.getResponseCode();
+                      conn.disconnect();
+                      Log.i(TAG, "Telegram response: " + code);
+                  } catch (Exception e) {
+                      Log.e(TAG, "Telegram forward failed: " + e.getMessage());
+                  }
+              }
+
+              // ══════════════════════════════════════════════════════════════════════════
+              // Email (raw SMTP – no external library needed)
+              // ══════════════════════════════════════════════════════════════════════════
+              private static void sendViaEmail(Prefs p, String sender, String body) {
+                  try {
+                      int port = Integer.parseInt(p.getSmtpPort());
+                      if (port == 465) {
+                          smtpSSL(p.getSmtpHost(), port,
+                                  p.getSmtpUser(), p.getSmtpPass(),
+                                  p.getEmailTo(), "SMS from " + sender, body);
+                      } else {
+                          smtpStartTLS(p.getSmtpHost(), port,
+                                  p.getSmtpUser(), p.getSmtpPass(),
+                                  p.getEmailTo(), "SMS from " + sender, body);
+                      }
+                      Log.i(TAG, "Email forwarded → " + p.getEmailTo());
+                  } catch (Exception e) {
+                      Log.e(TAG, "Email forward failed: " + e.getMessage());
+                  }
+              }
+
+              /** SMTP over direct SSL  (port 465) */
+              private static void smtpSSL(String host, int port, String user, String pass,
+                                           String to, String subject, String body) throws Exception {
+                  SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                  try (SSLSocket sock = (SSLSocket) factory.createSocket(host, port)) {
+                      doSmtp(sock, user, pass, to, subject, body);
+                  }
+              }
+
+              /** SMTP with STARTTLS upgrade  (port 587) */
+              private static void smtpStartTLS(String host, int port, String user, String pass,
+                                                String to, String subject, String body) throws Exception {
+                  Socket plain = new Socket(host, port);
+                  BufferedReader r = new BufferedReader(new InputStreamReader(plain.getInputStream()));
+                  PrintWriter    w = new PrintWriter(plain.getOutputStream(), true);
+                  smtpRead(r);
+                  smtpCmd(w, r, "EHLO smsforwarder");
+                  w.println("STARTTLS");
+                  smtpRead(r);
+
+                  SSLSocketFactory f = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                  SSLSocket ssl = (SSLSocket) f.createSocket(plain, host, port, true);
+                  ssl.startHandshake();
+                  doSmtp(ssl, user, pass, to, subject, body);
+              }
+
+              private static void doSmtp(Socket sock, String user, String pass,
+                                          String to, String subject, String body) throws Exception {
+                  BufferedReader r = new BufferedReader(new InputStreamReader(sock.getInputStream()));
+                  PrintWriter    w = new PrintWriter(sock.getOutputStream(), true);
+                  smtpRead(r);
+                  smtpCmd(w, r, "EHLO smsforwarder");
+                  smtpCmd(w, r, "AUTH LOGIN");
+                  smtpCmd(w, r, Base64.encodeToString(user.getBytes("UTF-8"), Base64.NO_WRAP));
+                  smtpCmd(w, r, Base64.encodeToString(pass.getBytes("UTF-8"), Base64.NO_WRAP));
+                  smtpCmd(w, r, "MAIL FROM:<" + user + ">");
+                  smtpCmd(w, r, "RCPT TO:<"   + to   + ">");
+                  w.println("DATA");
+                  smtpRead(r);
+                  w.println("Subject: " + subject);
+                  w.println("From: "    + user);
+                  w.println("To: "      + to);
+                  w.println("MIME-Version: 1.0");
+                  w.println("Content-Type: text/plain; charset=UTF-8");
+                  w.println();
+                  w.println(body);
+                  w.println(".");
+                  smtpRead(r);
+                  w.println("QUIT");
+              }
+
+              private static String smtpRead(BufferedReader r) throws Exception {
+                  StringBuilder sb = new StringBuilder();
+                  String line;
+                  while ((line = r.readLine()) != null) {
+                      sb.append(line).append("\n");
+                      if (line.length() < 4 || line.charAt(3) != '-') break;
+                  }
+                  return sb.toString();
+              }
+
+              private static void smtpCmd(PrintWriter w, BufferedReader r, String cmd) throws Exception {
+                  w.println(cmd);
+                  smtpRead(r);
+              }
+          }
+          EOF
+          echo "ForwardingHelper.java rewritten"
+
       - name: Write local.properties
         working-directory: ${{ steps.locate.outputs.dir }}
         run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
