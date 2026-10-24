@@ -19,19 +19,17 @@ jobs:
         id: extract
         run: |
           ZIP=$(find . -maxdepth 2 -iname "*.zip" -not -path "./.git/*" | head -n 1)
+          mkdir -p _project
           if [ -n "$ZIP" ]; then
             echo "Extracting $ZIP"
-            mkdir -p _project
             unzip -q -o "$ZIP" -d _project
           else
-            echo "No zip found, using repo root as project"
-            mkdir -p _project
+            echo "No zip found, using repo root"
             rsync -a --exclude=_project --exclude=.git ./ _project/
           fi
-
-          SETTINGS=$(find _project -name "settings.gradle.kts" -o -name "settings.gradle" | head -n 1)
+          SETTINGS=$(find _project \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
           if [ -z "$SETTINGS" ]; then
-            echo "::error::No settings.gradle(.kts) found after extraction"
+            echo "::error::No settings.gradle found"
             exit 1
           fi
           DIR=$(dirname "$SETTINGS")
@@ -54,7 +52,6 @@ jobs:
         run: gradle assembleDebug --no-daemon
 
       - name: Locate APK
-        id: apk
         run: |
           APK_PATH=$(find "${{ steps.extract.outputs.dir }}/app/build/outputs/apk" -name "*.apk" | head -n 1)
           if [ -z "$APK_PATH" ]; then
@@ -62,7 +59,6 @@ jobs:
             exit 1
           fi
           cp "$APK_PATH" sms-forwarder.apk
-          echo "Found APK at $APK_PATH"
 
       - name: Upload APK as build artifact
         uses: actions/upload-artifact@v4
@@ -76,153 +72,4 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: Build ${{ github.run_number }}
           files: sms-forwarder.apk
-          body: |
-            Automated debug build from commit ${{ github.sha }}.
-            Signed with the Android debug key: fine for sideloading on your own device.);
-
-                  SSLSocketFactory f = (SSLSocketFactory) SSLSocketFactory.getDefault();
-                  SSLSocket ssl = (SSLSocket) f.createSocket(plain, host, port, true);
-                  ssl.startHandshake();
-                  doSmtp(ssl, user, pass, to, subject, body);
-              }
-
-              private static void doSmtp(Socket sock, String user, String pass,
-                                          String to, String subject, String body) throws Exception {
-                  BufferedReader r = new BufferedReader(new InputStreamReader(sock.getInputStream()));
-                  PrintWriter    w = new PrintWriter(sock.getOutputStream(), true);
-                  smtpRead(r);
-                  smtpCmd(w, r, "EHLO smsforwarder");
-                  smtpCmd(w, r, "AUTH LOGIN");
-                  smtpCmd(w, r, Base64.encodeToString(user.getBytes("UTF-8"), Base64.NO_WRAP));
-                  smtpCmd(w, r, Base64.encodeToString(pass.getBytes("UTF-8"), Base64.NO_WRAP));
-                  smtpCmd(w, r, "MAIL FROM:<" + user + ">");
-                  smtpCmd(w, r, "RCPT TO:<"   + to   + ">");
-                  w.println("DATA");
-                  smtpRead(r);
-                  w.println("Subject: " + subject);
-                  w.println("From: "    + user);
-                  w.println("To: "      + to);
-                  w.println("MIME-Version: 1.0");
-                  w.println("Content-Type: text/plain; charset=UTF-8");
-                  w.println();
-                  w.println(body);
-                  w.println(".");
-                  smtpRead(r);
-                  w.println("QUIT");
-              }
-
-              private static String smtpRead(BufferedReader r) throws Exception {
-                  StringBuilder sb = new StringBuilder();
-                  String line;
-                  while ((line = r.readLine()) != null) {
-                      sb.append(line).append("\n");
-                      if (line.length() < 4 || line.charAt(3) != '-') break;
-                  }
-                  return sb.toString();
-              }
-
-              private static void smtpCmd(PrintWriter w, BufferedReader r, String cmd) throws Exception {
-                  w.println(cmd);
-                  smtpRead(r);
-              }
-          }
-          EOF
-          echo "ForwardingHelper.java rewritten"
-
-      - name: Write local.properties
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-
-      - name: Setup keystore
-        id: keystore
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: |
-          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-
-            echo "✓ Using keystore from secrets"
-            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > release.jks
-            cat > keystore.properties << PROPS
-          storeFile=../release.jks
-          storePassword=${{ secrets.KEYSTORE_PASSWORD }}
-          keyAlias=${{ secrets.KEY_ALIAS }}
-          keyPassword=${{ secrets.KEY_PASSWORD }}
-          PROPS
-
-          else
-
-            echo "No secrets found — generating keystore for this build..."
-            PASS="SmsForwarder$(date +%Y)"
-            ALIAS="smsforwarder"
-
-            keytool -genkeypair \
-              -keystore release.jks \
-              -alias "$ALIAS" \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass "$PASS" -keypass "$PASS" \
-              -dname "CN=SmsForwarder,O=Personal,C=US" \
-              -noprompt
-
-            B64=$(base64 -w 0 release.jks)
-
-            cat > keystore.properties << PROPS
-          storeFile=../release.jks
-          storePassword=$PASS
-          keyAlias=$ALIAS
-          keyPassword=$PASS
-          PROPS
-
-            cat >> $GITHUB_STEP_SUMMARY << SUMMARY
-          ## ⚠️ Action required — save these as GitHub Secrets
-
-          A keystore was auto-generated for this build.
-          **Add the 4 secrets below**, otherwise every build creates a new keystore
-          and you won't be able to install updates without uninstalling the app first.
-
-          Go to: **Settings → Secrets and variables → Actions → New repository secret**
-
-          | Secret name | Value |
-          |---|---|
-          | \`KEYSTORE_BASE64\` | \`$B64\` |
-          | \`KEYSTORE_PASSWORD\` | \`$PASS\` |
-          | \`KEY_ALIAS\` | \`$ALIAS\` |
-          | \`KEY_PASSWORD\` | \`$PASS\` |
-
-          Also download the **BACKUP-keystore** artifact and keep it safe.
-          SUMMARY
-
-            echo "FRESH=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build release APK
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: gradle assembleRelease --no-daemon --stacktrace
-
-      - name: Rename APK
-        working-directory: ${{ steps.locate.outputs.dir }}
-        run: |
-          mv app/build/outputs/apk/release/app-release.apk \
-             app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: sms-forwarder-v${{ github.run_number }}
-          path: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
-          retention-days: 30
-
-      - name: Upload keystore backup
-        if: steps.keystore.outputs.FRESH == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: BACKUP-keystore
-          path: ${{ steps.locate.outputs.dir }}/release.jks
-          retention-days: 90
-
-      - name: Create GitHub Release
-        if: github.event_name == 'workflow_dispatch' && inputs.create_release == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: "v1.${{ github.run_number }}"
-          name: "SMS Forwarder v1.${{ github.run_number }}"
-          files: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/release/sms-forwarder-v${{ github.run_number }}.apk
-          generate_release_notes: true
+          body: Automated debug build from commit ${{ github.sha }}.
