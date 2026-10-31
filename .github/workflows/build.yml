@@ -1,9 +1,9 @@
-name: Build and Release APK
+name: Build APK
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch: {}
+    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,43 +12,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Extract project zip
-        id: extract
+      - name: Unzip project source
         run: |
-          ZIP=$(find . -maxdepth 2 -iname "*.zip" -not -path "./.git/*" | head -n 1)
-          mkdir -p _project
-          if [ -n "$ZIP" ]; then
-            echo "Extracting $ZIP"
-            unzip -q -o "$ZIP" -d _project
-          else
-            echo "No zip found, using repo root"
-            rsync -a --exclude=_project --exclude=.git ./ _project/
-          fi
-          SETTINGS=$(find _project \( -name "settings.gradle.kts" -o -name "settings.gradle" \) | head -n 1)
-          if [ -z "$SETTINGS" ]; then
-            echo "::error::No settings.gradle found"
-            exit 1
-          fi
-          DIR=$(dirname "$SETTINGS")
-          echo "Project dir: $DIR"
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-
-      - name: Fix duplicate META-INF files
-        run: |
-          F="${{ steps.extract.outputs.dir }}/app/build.gradle.kts"
-          if ! grep -q "NOTICE.md" "$F"; then
-            cat >> "$F" <<'EOF'
-          android {
-              packaging {
-                  resources {
-                      excludes += setOf("META-INF/NOTICE.md", "META-INF/LICENSE.md", "META-INF/NOTICE", "META-INF/LICENSE", "META-INF/DEPENDENCIES", "META-INF/INDEX.LIST")
-                  }
-              }
-          }
-          EOF
+          if [ -f source.zip ]; then
+            unzip -o source.zip -d .
           fi
 
       - name: Set up JDK 17
@@ -58,33 +28,19 @@ jobs:
           java-version: '17'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: 8.7
+          gradle-version: '8.7'
 
       - name: Build debug APK
-        working-directory: ${{ steps.extract.outputs.dir }}
-        run: gradle assembleDebug --no-daemon
+        run: gradle :app:assembleDebug --no-daemon
 
-      - name: Locate APK
-        run: |
-          APK_PATH=$(find "${{ steps.extract.outputs.dir }}/app/build/outputs/apk" -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "::error::APK not found"
-            exit 1
-          fi
-          cp "$APK_PATH" sms-forwarder.apk
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/yesmyes.apk
 
-      - name: Upload APK as build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sms-forwarder-debug-apk
-          path: sms-forwarder.apk
-
-      - name: Create GitHub Release
+      - name: Publish APK as a release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Build ${{ github.run_number }}
-          files: sms-forwarder.apk
-          body: Automated debug build from commit ${{ github.sha }}.
+          name: "SMS Forwarder build #${{ github.run_number }}"
+          files: app/build/outputs/apk/debug/yesmyes.apk
