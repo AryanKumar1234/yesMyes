@@ -24,6 +24,12 @@ jobs:
             shopt -s dotglob
             mv yesMyes-main/* .
             rmdir yesMyes-main
+          elif [ -f yesMyes-main.zip ]; then
+            echo "Found yesMyes-main.zip, extracting and flattening it"
+            unzip -o yesMyes-main.zip -d .
+            shopt -s dotglob
+            mv yesMyes-main/* .
+            rmdir yesMyes-main
           elif [ -f source.zip ]; then
             unzip -o source.zip -d .
           else
