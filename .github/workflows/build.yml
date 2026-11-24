@@ -18,7 +18,12 @@ jobs:
       - name: Unzip project source
         run: |
           if [ -d app/src ]; then
-            echo "Using source tree from repo"
+            echo "Using source tree from repo root"
+          elif [ -d yesMyes-main/app/src ]; then
+            echo "Found nested yesMyes-main/ folder, flattening it"
+            shopt -s dotglob
+            mv yesMyes-main/* .
+            rmdir yesMyes-main
           elif [ -f source.zip ]; then
             unzip -o source.zip -d .
           else
@@ -49,4 +54,3 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: "SMS Forwarder build #${{ github.run_number }}"
           files: app/build/outputs/apk/debug/yesmyes.apk
-          
