@@ -21,15 +21,13 @@ jobs:
             echo "Using source tree from repo root"
           elif [ -d yesMyes-main/app/src ]; then
             echo "Found nested yesMyes-main/ folder, flattening it"
-            shopt -s dotglob
-            mv yesMyes-main/* .
-            rmdir yesMyes-main
+            cp -a yesMyes-main/. .
+            rm -rf yesMyes-main
           elif [ -f yesMyes-main.zip ]; then
             echo "Found yesMyes-main.zip, extracting and flattening it"
             unzip -o yesMyes-main.zip -d .
-            shopt -s dotglob
-            mv yesMyes-main/* .
-            rmdir yesMyes-main
+            cp -a yesMyes-main/. .
+            rm -rf yesMyes-main
           elif [ -f source.zip ]; then
             unzip -o source.zip -d .
           else
